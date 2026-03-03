@@ -1,0 +1,87 @@
+name: Modelica Specification Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  validate-modelica:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect actual Modelica changes
+        shell: bash
+        run: |
+          git diff --name-status \
+            ${{ github.event.pull_request.base.sha }} \
+            ${{ github.event.pull_request.head.sha }} > actual_raw.txt
+
+          echo "Raw changes:"
+          cat actual_raw.txt
+          echo "----------------------------------"
+
+          > actual_normalized.txt
+
+          while read status file rest; do
+            # rename 처리
+            if [[ "$status" == R* ]]; then
+              file="$rest"
+              status="R"
+            fi
+
+            if [[ "$file" == *.mo || "$file" == *.mos ]]; then
+              echo "$status: $file" >> actual_normalized.txt
+            fi
+          done < actual_raw.txt
+
+          echo "Filtered Modelica changes:"
+          cat actual_normalized.txt || true
+
+          # 줄바꿈 및 공백 정리
+          tr -d '\r' < actual_normalized.txt \
+            | sed 's/[[:space:]]*$//' \
+            | sort > actual_final.txt
+
+          echo "Normalized actual:"
+          cat actual_final.txt || true
+
+      - name: Extract declared changes from PR body
+        shell: bash
+        run: |
+          BODY="${{ github.event.pull_request.body }}"
+
+          if [[ -z "$BODY" ]]; then
+            echo "PR description is empty."
+            exit 1
+          fi
+
+          echo "$BODY" > pr_body.txt
+
+          # - M: file.mo 형식만 추출
+          grep -E "^- (M|A|D|R):" pr_body.txt | sed 's/- //' > declared_raw.txt || true
+
+          echo "Declared changes:"
+          cat declared_raw.txt || true
+
+          # 정규화
+          tr -d '\r' < declared_raw.txt \
+            | sed 's/[[:space:]]*$//' \
+            | sort > declared_final.txt
+
+          echo "Normalized declared:"
+          cat declared_final.txt || true
+
+      - name: Compare actual vs declared
+        shell: bash
+        run: |
+          if ! diff -u actual_final.txt declared_final.txt; then
+            echo "Mismatch between actual changes and PR description."
+            exit 1
+          fi
+
+          echo "Specification matches actual changes."
